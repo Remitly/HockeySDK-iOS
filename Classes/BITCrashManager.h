@@ -418,6 +418,9 @@ typedef NS_ENUM(NSUInteger, BITCrashManagerUserInput) {
 - (BOOL)isDebuggerAttached;
 
 
+- (void)generateLiveReport;
+
+
 /**
  * Lets the app crash for easy testing of the SDK
  *

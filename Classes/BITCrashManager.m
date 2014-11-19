@@ -669,6 +669,15 @@ static PLCrashReporterCallbacks plCrashCallbacks = {
 }
 
 
+- (void)generateLiveReport {
+  [self handleCrashDataFromBlock:^(NSError** pError) {
+    return [self.plCrashReporter generateLiveReportAndReturnError: pError];
+  }];
+
+  [self triggerDelayedProcessing];
+}
+
+
 - (void)generateTestCrash {
   if (![self isAppStoreEnvironment]) {
     
@@ -765,6 +774,14 @@ static PLCrashReporterCallbacks plCrashCallbacks = {
  * Parse the new crash report and gather additional meta data from the app which will be stored along the crash report
  */
 - (void) handleCrashReport {
+  [self handleCrashDataFromBlock:^(NSError** pError) {
+    return [self.plCrashReporter loadPendingCrashReportDataAndReturnError: pError];
+  }];
+
+  [self.plCrashReporter purgePendingCrashReport];
+}
+
+- (void) handleCrashDataFromBlock:(NSData* (^)(NSError**))block {
   NSError *error = NULL;
 	
   if (!self.plCrashReporter) return;
@@ -777,54 +794,8 @@ static PLCrashReporterCallbacks plCrashCallbacks = {
     [self saveSettings];
     
     // Try loading the crash report
-    NSData *crashData = [[NSData alloc] initWithData:[self.plCrashReporter loadPendingCrashReportDataAndReturnError: &error]];
-    
-    NSString *cacheFilename = [NSString stringWithFormat: @"%.0f", [NSDate timeIntervalSinceReferenceDate]];
-    _lastCrashFilename = cacheFilename;
-    
-    if (crashData == nil) {
-      BITHockeyLog(@"ERROR: Could not load crash report: %@", error);
-    } else {
-      // get the startup timestamp from the crash report, and the file timestamp to calculate the timeinterval when the crash happened after startup
-      BITPLCrashReport *report = [[BITPLCrashReport alloc] initWithData:crashData error:&error];
-      
-      if (report == nil) {
-        BITHockeyLog(@"WARNING: Could not parse crash report");
-      } else {
-        NSDate *appStartTime = nil;
-        NSDate *appCrashTime = nil;
-        if ([report.processInfo respondsToSelector:@selector(processStartTime)]) {
-          if (report.systemInfo.timestamp && report.processInfo.processStartTime) {
-            appStartTime = report.processInfo.processStartTime;
-            appCrashTime =report.systemInfo.timestamp;
-            _timeintervalCrashInLastSessionOccured = [report.systemInfo.timestamp timeIntervalSinceDate:report.processInfo.processStartTime];
-          }
-        }
-        
-        [crashData writeToFile:[_crashesDir stringByAppendingPathComponent: cacheFilename] atomically:YES];
-        
-        [self storeMetaDataForCrashReportFilename:cacheFilename];
-        
-        NSString *incidentIdentifier = @"???";
-        if (report.uuidRef != NULL) {
-          incidentIdentifier = (NSString *) CFBridgingRelease(CFUUIDCreateString(NULL, report.uuidRef));
-        }
-        
-        NSString *reporterKey = bit_appAnonID() ?: @"";
-
-        _lastSessionCrashDetails = [[BITCrashDetails alloc] initWithIncidentIdentifier:incidentIdentifier
-                                                                           reporterKey:reporterKey
-                                                                                signal:report.signalInfo.name
-                                                                         exceptionName:report.exceptionInfo.exceptionName
-                                                                       exceptionReason:report.exceptionInfo.exceptionReason
-                                                                          appStartTime:appStartTime
-                                                                             crashTime:appCrashTime
-                                                                             osVersion:report.systemInfo.operatingSystemVersion
-                                                                               osBuild:report.systemInfo.operatingSystemBuild
-                                                                              appBuild:report.applicationInfo.applicationVersion
-                                    ];
-      }
-    }
+    NSData *crashData = [[NSData alloc] initWithData:block(&error)];
+    [self handleCrashData:crashData error:error];
   }
 	
   // Purge the report
@@ -834,13 +805,60 @@ static PLCrashReporterCallbacks plCrashCallbacks = {
   }
 
   [self saveSettings];
-  
-  [self.plCrashReporter purgePendingCrashReport];
+}
+
+- (void) handleCrashData:(NSData*)crashData error:(NSError*)error {
+  NSString *cacheFilename = [NSString stringWithFormat: @"%.0f", [NSDate timeIntervalSinceReferenceDate]];
+  _lastCrashFilename = cacheFilename;
+
+  if (crashData == nil) {
+    BITHockeyLog(@"ERROR: Could not load crash report: %@", error);
+  } else {
+    // get the startup timestamp from the crash report, and the file timestamp to calculate the timeinterval when the crash happened after startup
+    BITPLCrashReport *report = [[BITPLCrashReport alloc] initWithData:crashData error:&error];
+
+    if (report == nil) {
+      BITHockeyLog(@"WARNING: Could not parse crash report");
+    } else {
+      NSDate *appStartTime = nil;
+      NSDate *appCrashTime = nil;
+      if ([report.processInfo respondsToSelector:@selector(processStartTime)]) {
+        if (report.systemInfo.timestamp && report.processInfo.processStartTime) {
+          appStartTime = report.processInfo.processStartTime;
+          appCrashTime =report.systemInfo.timestamp;
+          _timeintervalCrashInLastSessionOccured = [report.systemInfo.timestamp timeIntervalSinceDate:report.processInfo.processStartTime];
+        }
+      }
+
+      [crashData writeToFile:[_crashesDir stringByAppendingPathComponent: cacheFilename] atomically:YES];
+
+      [self storeMetaDataForCrashReportFilename:cacheFilename];
+
+      NSString *incidentIdentifier = @"???";
+      if (report.uuidRef != NULL) {
+        incidentIdentifier = (NSString *) CFBridgingRelease(CFUUIDCreateString(NULL, report.uuidRef));
+      }
+
+      NSString *reporterKey = bit_appAnonID() ?: @"";
+
+      _lastSessionCrashDetails = [[BITCrashDetails alloc] initWithIncidentIdentifier:incidentIdentifier
+                                                                         reporterKey:reporterKey
+                                                                              signal:report.signalInfo.name
+                                                                       exceptionName:report.exceptionInfo.exceptionName
+                                                                     exceptionReason:report.exceptionInfo.exceptionReason
+                                                                        appStartTime:appStartTime
+                                                                           crashTime:appCrashTime
+                                                                           osVersion:report.systemInfo.operatingSystemVersion
+                                                                             osBuild:report.systemInfo.operatingSystemBuild
+                                                                            appBuild:report.applicationInfo.applicationVersion
+                                  ];
+    }
+  }
 }
 
 /**
  Get the filename of the first not approved crash report
- 
+
  @return NSString Filename of the first found not approved crash report
  */
 - (NSString *)firstNotApprovedCrashReport {
